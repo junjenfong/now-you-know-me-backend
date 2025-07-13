@@ -4,6 +4,11 @@ import { Connection, Player, Session } from "./models/index.js";
 
 const router = express.Router();
 
+// health check
+app.get("/api/health", (req, res) => {
+  res.status(200).json({ status: "ok", uptime: process.uptime() });
+});
+
 // Get session details
 router.get("/sessions/:sessionId", async (req, res) => {
   try {
