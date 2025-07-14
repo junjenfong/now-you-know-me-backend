@@ -35,7 +35,7 @@ const server = createServer(app);
 // Middleware
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "http://localhost:5173",
+    origin: "*", // Allow all origins
     methods: ["GET", "POST"],
     credentials: true,
   })
