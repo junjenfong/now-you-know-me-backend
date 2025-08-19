@@ -72,7 +72,6 @@ router.post("/sessions", async (req, res) => {
       name,
       maxPlayers,
       status: "waiting",
-      adminSocketId: null,
     });
 
     await session.save();

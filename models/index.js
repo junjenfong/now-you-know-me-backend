@@ -2,7 +2,6 @@ import mongoose from "mongoose";
 
 const playerSchema = new mongoose.Schema(
   {
-    socketId: String,
     name: String,
     score: { type: Number, default: 0 },
     avatar: String,
