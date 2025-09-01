@@ -64,14 +64,31 @@ router.get("/sessions", async (req, res) => {
 // Create new session
 router.post("/sessions", async (req, res) => {
   try {
-    const { name, maxPlayers } = req.body;
+    const { name, maxPlayers, customQuestions } = req.body;
     const sessionId = name || Math.random().toString(36).substr(2, 9);
+
+    let questions;
+    if (customQuestions && customQuestions.length === 5) {
+      questions = customQuestions.map(q => ({
+        title: q,
+        field: q.toLowerCase().replace(/[^a-z0-9]/gi, '')
+      }));
+    } else {
+      questions = [
+        { title: "What's your favorite food?", field: "favoriteFood" },
+        { title: "What's your hobby?", field: "hobby" },
+        { title: "What's your favorite color?", field: "favoriteColor" },
+        { title: "Who's your favorite artist?", field: "favoriteArtist" },
+        { title: "Who's your idol?", field: "idol" },
+      ];
+    }
 
     const session = new Session({
       sessionId,
       name,
       maxPlayers,
       status: "waiting",
+      questions,
     });
 
     await session.save();
@@ -129,6 +146,10 @@ router.post("/sessions/:sessionId/join", async (req, res) => {
     });
 
     await player.save();
+
+    const players = await Player.find({ sessionId });
+    req.app.get("io").to(sessionId).emit("updatePlayers", players);
+
     res.status(201).json(player);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -172,7 +193,8 @@ router.post("/sessions/:sessionId/start", async (req, res) => {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    // req.app.get('io').to(sessionId).emit('gameStarted');
+    const players = await Player.find({ sessionId });
+    req.app.get("io").to(sessionId).emit("gameStarted", players);
 
     res.json(updatedSession);
   } catch (error) {
@@ -195,8 +217,8 @@ router.post("/sessions/:sessionId/end", async (req, res) => {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    // Optional: Emit a socket event to notify clients
-    // req.app.get('io').to(sessionId).emit('gameEnded');
+    const players = await Player.find({ sessionId }).sort({ score: -1 });
+    req.app.get("io").to(sessionId).emit("gameEnded", players);
 
     res.json(updatedSession);
   } catch (error) {
@@ -217,6 +239,25 @@ router.get("/sessions/:sessionId/players", async (req, res) => {
   } catch (error) {
     console.error("Error fetching players:", error);
     res.status(500).json({ error: "Failed to fetch players" });
+  }
+});
+
+// Get session results for download
+router.get("/sessions/:sessionId/results", async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const session = await Session.findOne({ sessionId });
+
+    if (!session) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    const players = await Player.find({ sessionId });
+
+    res.json({ questions: session.questions, players });
+  } catch (error) {
+    console.error("Error fetching session results:", error);
+    res.status(500).json({ error: "Failed to fetch session results" });
   }
 });
 
@@ -317,7 +358,7 @@ router.post("/sessions/:sessionId/match", async (req, res) => {
 
     // Update found player's counter
     await Player.findByIdAndUpdate(foundPlayerId, {
-      $inc: { peopleWhoKnowYou: 1 },
+      $inc: { peopleWhoKnowYou: 1, score: 50 },
     });
 
     // Check if finder completed all matches
@@ -347,10 +388,35 @@ router.post("/sessions/:sessionId/match", async (req, res) => {
       isCompleted: matchCount >= totalOtherPlayers,
       totalMatches: matchCount,
       totalRequired: totalOtherPlayers,
+      points: {
+        finder: 100,
+        found: 50,
+      },
     });
+
+    const players = await Player.find({ sessionId }).sort({ score: -1 });
+    req.app.get("io").to(sessionId).emit("updateLeaderboard", players);
   } catch (error) {
     console.error("Error confirming match:", error);
     res.status(500).json({ error: "Failed to confirm match" });
+  }
+});
+
+router.post("/sessions/:sessionId/wrong-match", async (req, res) => {
+  try {
+    const { finderId } = req.body;
+
+    await Player.findByIdAndUpdate(finderId, {
+      $inc: { score: -10 },
+    });
+
+    const players = await Player.find({ sessionId }).sort({ score: -1 });
+    req.app.get("io").to(sessionId).emit("updateLeaderboard", players);
+
+    res.json({ message: "Score updated successfully" });
+  } catch (error) {
+    console.error("Error updating score:", error);
+    res.status(500).json({ error: "Failed to update score" });
   }
 });
 // Get a new profile to find

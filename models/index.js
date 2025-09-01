@@ -12,11 +12,8 @@ const playerSchema = new mongoose.Schema(
       default: "connected",
     },
     profile: {
-      favoriteFood: { type: String, default: "" },
-      hobby: { type: String, default: "" },
-      favoriteColor: { type: String, default: "" },
-      favoriteArtist: { type: String, default: "" },
-      idol: { type: String, default: "" },
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
     },
     matches: [
       {
@@ -54,6 +51,12 @@ const sessionSchema = new mongoose.Schema(
       enum: ["waiting", "playing", "ended"],
       default: "waiting",
     },
+    questions: [
+      {
+        title: { type: String, required: true },
+        field: { type: String, required: true },
+      },
+    ],
   },
   { timestamps: true }
 );
