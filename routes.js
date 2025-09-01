@@ -425,6 +425,8 @@ router.get(
   async (req, res) => {
     try {
       const { sessionId, playerId } = req.params;
+      const { skip } = req.query; // Get the skipped profile ID from the query params
+
       console.log(
         `Fetching new profile for player ${playerId} in session ${sessionId}`
       );
@@ -437,16 +439,20 @@ router.get(
       console.log("Current player found:", currentPlayer.name);
 
       // Get all matched player IDs (convert to strings for comparison)
-      console.log(currentPlayer.matches);
       const matchedIds = (currentPlayer.matches || []).map((m) => m._id);
       console.log("Already matched IDs:", matchedIds);
+
+      const exclusionIds = [...matchedIds];
+      if (skip) {
+        exclusionIds.push(skip);
+      }
 
       // Find all other players in the session (excluding self and already matched)
       const availablePlayers = await Player.find({
         sessionId,
         _id: {
           $ne: playerId, // Exclude self
-          $nin: matchedIds, // Exclude already matched
+          $nin: exclusionIds, // Exclude already matched and skipped
         },
         hasProfile: true, // Only players with profiles
       });
