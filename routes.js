@@ -404,6 +404,7 @@ router.post("/sessions/:sessionId/match", async (req, res) => {
 
 router.post("/sessions/:sessionId/wrong-match", async (req, res) => {
   try {
+    const { sessionId } = req.params;
     const { finderId } = req.body;
 
     await Player.findByIdAndUpdate(finderId, {
