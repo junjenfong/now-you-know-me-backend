@@ -13,7 +13,6 @@ const playerSchema = new mongoose.Schema(
     },
     profile: {
       type: mongoose.Schema.Types.Mixed,
-      default: {},
     },
     matches: [
       {
