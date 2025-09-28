@@ -4,6 +4,8 @@ const playerSchema = new mongoose.Schema(
   {
     name: String,
     score: { type: Number, default: 0 },
+    wrongGuesses: { type: Number, default: 0 },
+    peopleWhoKnowYou: { type: Number, default: 0 },
     avatar: String,
     sessionId: String,
     status: {
@@ -44,7 +46,7 @@ const sessionSchema = new mongoose.Schema(
   {
     sessionId: { type: String, unique: true },
     name: { type: String, required: true },
-    maxPlayers: { type: Number, required: true, min: 2, max: 50 },
+    maxPlayers: { type: Number, required: true, min: 2, max: 300 },
     status: {
       type: String,
       enum: ["waiting", "playing", "ended"],

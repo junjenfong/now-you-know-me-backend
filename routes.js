@@ -147,8 +147,8 @@ router.post("/sessions/:sessionId/join", async (req, res) => {
 
     await player.save();
 
-    const players = await Player.find({ sessionId });
-    req.app.get("io").to(sessionId).emit("updatePlayers", players);
+    const players = await Player.find({ sessionId }).sort({ score: -1 });
+    req.app.get("io").to(sessionId).emit("updateLeaderboard", players);
 
     res.status(201).json(player);
   } catch (error) {
@@ -172,12 +172,49 @@ router.post("/players/:playerId/profile", async (req, res) => {
       return res.status(404).json({ error: "Player not found" });
     }
 
+    // Emit an update to all clients in the session
+    const players = await Player.find({ sessionId: updatedPlayer.sessionId }).sort({ score: -1 });
+    req.app.get("io").to(updatedPlayer.sessionId).emit("updateLeaderboard", players);
+
     res.json(updatedPlayer);
   } catch (error) {
     console.error("Error updating player profile:", error);
     res.status(500).json({ error: "Failed to update player profile" });
   }
 });
+
+// Admin: Update player score
+router.patch("/players/:playerId/score", async (req, res) => {
+  try {
+    const { playerId } = req.params;
+    const { score } = req.body;
+
+    if (score === undefined || isNaN(parseInt(score))) {
+      return res.status(400).json({ error: "Invalid score provided" });
+    }
+
+    const updatedPlayer = await Player.findByIdAndUpdate(
+      playerId,
+      { $set: { score: parseInt(score) } },
+      { new: true }
+    );
+
+    if (!updatedPlayer) {
+      return res.status(404).json({ error: "Player not found" });
+    }
+
+    // Emit an update to all clients in the session
+    const players = await Player.find({ sessionId: updatedPlayer.sessionId }).sort({ score: -1 });
+    req.app.get("io").to(updatedPlayer.sessionId).emit("updateLeaderboard", players);
+    console.log("Emitting updateLeaderboard after score update for session", updatedPlayer.sessionId);
+
+    res.json(updatedPlayer);
+  } catch (error) {
+    console.error("Error updating score:", error);
+    res.status(500).json({ error: "Failed to update score" });
+  }
+});
+
 
 // Start session
 router.post("/sessions/:sessionId/start", async (req, res) => {
@@ -347,7 +384,7 @@ router.post("/sessions/:sessionId/match", async (req, res) => {
       score: newFinderScore,
       $push: {
         matches: {
-          _id: foundPlayer._id,
+          playerId: foundPlayerId,
           matchedAt: matchTime,
           selfieUrl,
           playerName: foundPlayer.name,
@@ -408,7 +445,7 @@ router.post("/sessions/:sessionId/wrong-match", async (req, res) => {
     const { finderId } = req.body;
 
     await Player.findByIdAndUpdate(finderId, {
-      $inc: { score: -10 },
+      $inc: { score: -10, wrongGuesses: 1 },
     });
 
     const players = await Player.find({ sessionId }).sort({ score: -1 });
@@ -440,7 +477,7 @@ router.get(
       console.log("Current player found:", currentPlayer.name);
 
       // Get all matched player IDs (convert to strings for comparison)
-      const matchedIds = (currentPlayer.matches || []).map((m) => m._id);
+      const matchedIds = (currentPlayer.matches || []).map((m) => m.playerId);
       console.log("Already matched IDs:", matchedIds);
 
       const exclusionIds = [...matchedIds];

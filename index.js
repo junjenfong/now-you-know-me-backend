@@ -25,7 +25,7 @@ const io = new Server(server, {
 app.use(
   cors({
     origin: "*", // Allow all origins
-    methods: ["GET", "POST"],
+    methods: ["GET", "POST", "PATCH"],
     credentials: true,
   })
 );
