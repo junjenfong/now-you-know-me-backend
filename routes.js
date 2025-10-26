@@ -505,7 +505,7 @@ router.get(
 
       if (availablePlayers.length === 0) {
         console.log(`No more profiles to find for player ${playerId}`);
-        return res.status(404).json({ error: "No more profiles to find" });
+        return res.status(200).json({ message: "ALL_PLAYERS_FOUND" });
       }
 
       // Random selection
@@ -514,7 +514,7 @@ router.get(
 
       if (!playerToFind) {
         console.log(`No player found at randomIndex, potential issue.`);
-        return res.status(404).json({ error: "No more profiles to find" });
+        return res.status(200).json({ message: "ALL_PLAYERS_FOUND" });
       }
 
       console.log(
