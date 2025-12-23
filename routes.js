@@ -4,6 +4,33 @@ import { Connection, Player, Session } from "./models/index.js";
 
 const router = express.Router();
 
+// Throttling map for leaderboard updates
+const sessionUpdateTimers = new Map();
+const THROTTLE_INTERVAL = 5000; // 5 seconds
+
+const emitLeaderboardUpdate = async (req, sessionId) => {
+  const now = Date.now();
+  const lastUpdate = sessionUpdateTimers.get(sessionId) || 0;
+
+  if (now - lastUpdate >= THROTTLE_INTERVAL) {
+    // Emit immediately
+    const players = await Player.find({ sessionId }).sort({ score: -1, lastMatchAt: 1 });
+    req.app.get("io").to(sessionId).emit("updateLeaderboard", players);
+    sessionUpdateTimers.set(sessionId, now);
+  } else {
+    // Schedule update if not already scheduled
+    if (!sessionUpdateTimers.has(`${sessionId}_scheduled`)) {
+      sessionUpdateTimers.set(`${sessionId}_scheduled`, true);
+      setTimeout(async () => {
+        const players = await Player.find({ sessionId }).sort({ score: -1, lastMatchAt: 1 });
+        req.app.get("io").to(sessionId).emit("updateLeaderboard", players);
+        sessionUpdateTimers.set(sessionId, Date.now());
+        sessionUpdateTimers.delete(`${sessionId}_scheduled`);
+      }, THROTTLE_INTERVAL - (now - lastUpdate));
+    }
+  }
+};
+
 // health check
 router.get("/health", (req, res) => {
   res.status(200).json({ status: "ok", uptime: process.uptime() });
@@ -147,8 +174,9 @@ router.post("/sessions/:sessionId/join", async (req, res) => {
 
     await player.save();
 
-    const players = await Player.find({ sessionId }).sort({ score: -1 });
-    req.app.get("io").to(sessionId).emit("updateLeaderboard", players);
+    // const players = await Player.find({ sessionId }).sort({ score: -1, lastMatchAt: 1 });
+    // req.app.get("io").to(sessionId).emit("updateLeaderboard", players);
+    emitLeaderboardUpdate(req, sessionId);
 
     res.status(201).json(player);
   } catch (error) {
@@ -173,8 +201,9 @@ router.post("/players/:playerId/profile", async (req, res) => {
     }
 
     // Emit an update to all clients in the session
-    const players = await Player.find({ sessionId: updatedPlayer.sessionId }).sort({ score: -1 });
-    req.app.get("io").to(updatedPlayer.sessionId).emit("updateLeaderboard", players);
+    // const players = await Player.find({ sessionId: updatedPlayer.sessionId }).sort({ score: -1, lastMatchAt: 1 });
+    // req.app.get("io").to(updatedPlayer.sessionId).emit("updateLeaderboard", players);
+    emitLeaderboardUpdate(req, updatedPlayer.sessionId);
 
     res.json(updatedPlayer);
   } catch (error) {
@@ -204,8 +233,9 @@ router.patch("/players/:playerId/score", async (req, res) => {
     }
 
     // Emit an update to all clients in the session
-    const players = await Player.find({ sessionId: updatedPlayer.sessionId }).sort({ score: -1 });
-    req.app.get("io").to(updatedPlayer.sessionId).emit("updateLeaderboard", players);
+    // const players = await Player.find({ sessionId: updatedPlayer.sessionId }).sort({ score: -1, lastMatchAt: 1 });
+    // req.app.get("io").to(updatedPlayer.sessionId).emit("updateLeaderboard", players);
+    emitLeaderboardUpdate(req, updatedPlayer.sessionId);
     console.log("Emitting updateLeaderboard after score update for session", updatedPlayer.sessionId);
 
     res.json(updatedPlayer);
@@ -254,7 +284,7 @@ router.post("/sessions/:sessionId/end", async (req, res) => {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    const players = await Player.find({ sessionId }).sort({ score: -1 });
+    const players = await Player.find({ sessionId }).sort({ score: -1, lastMatchAt: 1 });
     req.app.get("io").to(sessionId).emit("gameEnded", players);
 
     res.json(updatedSession);
@@ -269,7 +299,7 @@ router.get("/sessions/:sessionId/players", async (req, res) => {
   try {
     const { sessionId } = req.params;
     const players = await Player.find({ sessionId })
-      .sort({ score: -1 })
+      .sort({ score: -1, lastMatchAt: 1 })
       .select("-status");
 
     res.json({ players });
@@ -369,29 +399,32 @@ router.post("/sessions/:sessionId/match", async (req, res) => {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    const finderPlayer = await Player.findById(finderId);
-    const foundPlayer = await Player.findById(foundPlayerId);
-
-    if (!finderPlayer || !foundPlayer) {
-      return res.status(404).json({ error: "One or both players not found" });
-    }
-
-    const newFinderScore = (finderPlayer.score || 0) + 100;
-    const matchTime = new Date();
-
-    // Update finder's matches
-    await Player.findByIdAndUpdate(finderId, {
-      score: newFinderScore,
-      $push: {
-        matches: {
-          playerId: foundPlayerId,
-          matchedAt: matchTime,
-          selfieUrl,
-          playerName: foundPlayer.name,
-        },
+    // Atomic update: Only update if the match doesn't already exist
+    const finderPlayer = await Player.findOneAndUpdate(
+      {
+        _id: finderId,
+        "matches.playerId": { $ne: foundPlayerId }, // Condition: Match must not exist
       },
-      $inc: { peopleKnown: 1 },
-    });
+      {
+        $inc: { score: 100, peopleKnown: 1 },
+        $push: {
+          matches: {
+            playerId: foundPlayerId,
+            matchedAt: matchTime,
+            selfieUrl,
+            playerName: foundPlayer.name,
+          },
+        },
+        lastMatchAt: matchTime,
+      },
+      { new: true }
+    );
+
+    if (!finderPlayer) {
+      // If no document returned, it means the match already exists (race condition handled)
+      console.log("Match already exists or player not found. Skipping update.");
+      return res.status(400).json({ error: "Match already recorded" });
+    }
 
     // Update found player's counter
     await Player.findByIdAndUpdate(foundPlayerId, {
@@ -405,11 +438,10 @@ router.post("/sessions/:sessionId/match", async (req, res) => {
       profile: { $exists: true, $ne: null },
     });
 
-    const finderWithMatches = await Player.findById(finderId);
-    const matchCount = (finderWithMatches.matches || []).length;
+    const matchCount = (finderPlayer.matches || []).length;
 
     // If this player just completed all matches, record completion time
-    if (matchCount >= totalOtherPlayers && !finderWithMatches.completedAt) {
+    if (matchCount >= totalOtherPlayers && !finderPlayer.completedAt) {
       await Player.findByIdAndUpdate(finderId, {
         completedAt: matchTime,
         isCompleted: true,
@@ -431,8 +463,9 @@ router.post("/sessions/:sessionId/match", async (req, res) => {
       },
     });
 
-    const players = await Player.find({ sessionId }).sort({ score: -1 });
-    req.app.get("io").to(sessionId).emit("updateLeaderboard", players);
+    // const players = await Player.find({ sessionId }).sort({ score: -1, lastMatchAt: 1 });
+    // req.app.get("io").to(sessionId).emit("updateLeaderboard", players);
+    emitLeaderboardUpdate(req, sessionId);
   } catch (error) {
     console.error("Error confirming match:", error);
     res.status(500).json({ error: "Failed to confirm match" });
@@ -448,8 +481,9 @@ router.post("/sessions/:sessionId/wrong-match", async (req, res) => {
       $inc: { score: -10, wrongGuesses: 1 },
     });
 
-    const players = await Player.find({ sessionId }).sort({ score: -1 });
-    req.app.get("io").to(sessionId).emit("updateLeaderboard", players);
+    // const players = await Player.find({ sessionId }).sort({ score: -1, lastMatchAt: 1 });
+    // req.app.get("io").to(sessionId).emit("updateLeaderboard", players);
+    emitLeaderboardUpdate(req, sessionId);
 
     res.json({ message: "Score updated successfully" });
   } catch (error) {
@@ -485,35 +519,40 @@ router.get(
         exclusionIds.push(skip);
       }
 
-      // Find all other players in the session (excluding self and already matched)
-      const availablePlayers = await Player.find({
-        sessionId,
-        _id: {
-          $ne: playerId, // Exclude self
-          $nin: exclusionIds, // Exclude already matched and skipped
+      // Find and atomically update the player with the lowest timesAssigned
+      let playerToFind = await Player.findOneAndUpdate(
+        {
+          sessionId,
+          _id: {
+            $ne: playerId, // Exclude self
+            $nin: exclusionIds, // Exclude already matched and skipped
+          },
+          hasProfile: true, // Only players with profiles
         },
-        hasProfile: true, // Only players with profiles
-      });
-
-      console.log(
-        `Found ${availablePlayers.length} potential players to find.`
-      );
-      console.log(
-        "Available players:",
-        availablePlayers.map((p) => ({ name: p.name, id: p._id }))
+        { $inc: { timesAssigned: 1 } },
+        { sort: { timesAssigned: 1 }, new: true }
       );
 
-      if (availablePlayers.length === 0) {
-        console.log(`No more profiles to find for player ${playerId}`);
-        return res.status(200).json({ message: "ALL_PLAYERS_FOUND" });
+      // If no player found AND we were skipping someone, try again without the skip
+      // This handles the case where the skipped player was the ONLY available player
+      if (!playerToFind && skip) {
+        console.log("No new players found, retrying with skipped player included.");
+        playerToFind = await Player.findOneAndUpdate(
+            {
+              sessionId,
+              _id: {
+                $ne: playerId, // Exclude self
+                $nin: matchedIds, // Exclude ONLY already matched (allow skipped)
+              },
+              hasProfile: true,
+            },
+            { $inc: { timesAssigned: 1 } },
+            { sort: { timesAssigned: 1 }, new: true }
+          );
       }
 
-      // Random selection
-      const randomIndex = Math.floor(Math.random() * availablePlayers.length);
-      const playerToFind = availablePlayers[randomIndex];
-
       if (!playerToFind) {
-        console.log(`No player found at randomIndex, potential issue.`);
+        console.log(`No more profiles to find for player ${playerId}`);
         return res.status(200).json({ message: "ALL_PLAYERS_FOUND" });
       }
 

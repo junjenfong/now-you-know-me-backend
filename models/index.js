@@ -27,6 +27,8 @@ const playerSchema = new mongoose.Schema(
     gameEndedAt: { type: Date },
     preserveData: { type: Boolean, default: true },
     hasProfile: { type: Boolean, default: false },
+    lastMatchAt: { type: Date },
+    timesAssigned: { type: Number, default: 0 },
   },
   {
     timestamps: true,
@@ -34,7 +36,8 @@ const playerSchema = new mongoose.Schema(
   }
 );
 
-playerSchema.index({ sessionId: 1 });
+playerSchema.index({ sessionId: 1, score: -1, lastMatchAt: 1 }); // For Leaderboard
+playerSchema.index({ sessionId: 1, timesAssigned: 1 }); // For Profile Assignment
 playerSchema.set("collection", "players");
 
 const connectionSchema = new mongoose.Schema({
