@@ -1,6 +1,20 @@
 import archiver from "archiver";
+import axios from "axios";
 import express from "express";
 import { Connection, Player, Session } from "./models/index.js";
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import dotenv from "dotenv";
+
+dotenv.config();
+
+const s3Client = new S3Client({
+  region: process.env.AWS_REGION,
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  },
+});
 
 const router = express.Router();
 
@@ -34,6 +48,30 @@ const emitLeaderboardUpdate = async (req, sessionId) => {
 // health check
 router.get("/health", (req, res) => {
   res.status(200).json({ status: "ok", uptime: process.uptime() });
+});
+
+// Get S3 Pre-signed URL
+router.get("/s3-upload-url", async (req, res) => {
+  try {
+    const { fileType, sessionId } = req.query;
+    const timestamp = Date.now();
+    const randomString = Math.random().toString(36).substring(2, 15);
+    const key = `${sessionId}/${timestamp}-${randomString}.${fileType.split("/")[1]}`;
+
+    const command = new PutObjectCommand({
+      Bucket: process.env.AWS_BUCKET_NAME,
+      Key: key,
+      ContentType: fileType,
+    });
+
+    const uploadUrl = await getSignedUrl(s3Client, command, { expiresIn: 60 });
+    const publicUrl = `https://${process.env.AWS_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
+
+    res.json({ uploadUrl, key, publicUrl });
+  } catch (error) {
+    console.error("Error generating S3 URL:", error);
+    res.status(500).json({ error: "Failed to generate upload URL" });
+  }
 });
 
 // Get session details
@@ -368,14 +406,24 @@ router.get("/sessions/:sessionId/images", async (req, res) => {
       if (player.matches && player.matches.length > 0) {
         for (const match of player.matches) {
           if (match.selfieUrl) {
-            const base64Data = match.selfieUrl.replace(
-              /^data:image\/(png|jpeg);base64,/,
-              ""
-            );
-            const imgBuffer = Buffer.from(base64Data, "base64");
-            archive.append(imgBuffer, {
-              name: `${player.name}-${match.playerName}.png`,
-            });
+            try {
+              // Fetch image from S3
+              const response = await axios.get(match.selfieUrl, {
+                responseType: "arraybuffer",
+              });
+              const imgBuffer = Buffer.from(response.data, "binary");
+              
+              // Determine extension from content-type or default to jpg
+              const contentType = response.headers["content-type"];
+              const extension = contentType ? contentType.split("/")[1] : "jpg";
+
+              archive.append(imgBuffer, {
+                name: `${player.name}-${match.playerName}.${extension}`,
+              });
+            } catch (err) {
+              console.error(`Failed to download image for ${player.name}:`, err.message);
+              // Continue to next image even if one fails
+            }
           }
         }
       }
@@ -398,6 +446,13 @@ router.post("/sessions/:sessionId/match", async (req, res) => {
     if (!session) {
       return res.status(404).json({ error: "Session not found" });
     }
+
+    const foundPlayer = await Player.findById(foundPlayerId);
+    if (!foundPlayer) {
+      return res.status(404).json({ error: "Found player not found" });
+    }
+
+    const matchTime = new Date();
 
     // Atomic update: Only update if the match doesn't already exist
     const finderPlayer = await Player.findOneAndUpdate(
